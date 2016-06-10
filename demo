@@ -1,0 +1,112 @@
+#!/usr/bin/env bash
+
+docker ps -a -q | xargs docker rm -f
+
+STEP=${STEP:-0}
+
+DOMAIN=${DOMAIN:-lndw-test.sty.gr}
+MAIL=${MAIL:-lndw@sty.gr}
+
+docker pull traefik
+
+pull_images() {
+	docker pull mariadb
+	docker pull wordpress
+	docker pull emilevauge/whoami
+}
+
+pull_images >pull-images.log 2>pull-images.err &
+
+if [[ $STEP -lt 1 ]]; then
+	mkdir traefik
+	openssl req -new -newkey rsa:2048 -days 365 -nodes -x509 \
+	  -subj "/CN=traefik" \
+	  -keyout traefik/traefik.key.pem \
+	  -out    traefik/traefik.crt.pem 
+
+	cat<<eo_traefik > traefik/traefik.toml
+logLevel = "DEBUG"
+defaultEntryPoints = ["http", "https"]
+[acme]
+  Email = "$MAIL"
+  storageFile = "/etc/traefik/acme.json"
+  entryPoint = "https"
+  onDemand = true
+  [[acme.domains]]
+    main = "$DOMAIN"
+    sans = ["traefik.$DOMAIN"]
+[entryPoints]
+  [entryPoints.http]
+    address = ":80"
+    [entryPoints.http.redirect]
+      entryPoint = "https"
+  [entryPoints.https]
+    address = ":443"
+    [entryPoints.https.tls]
+      [[entryPoints.https.tls.certificates]]
+        CertFile = "/etc/traefik/traefik.crt.pem"
+        KeyFile = "/etc/traefik/traefik.key.pem"
+[web]
+  address = ":8080"
+  ReadOnly = true
+[docker]
+  endpoint = "unix:///var/run/docker.sock"
+  domain = "$DOMAIN"
+  watch = true
+eo_traefik
+
+	docker run --detach --name=traefik \
+	  --volume=/run/docker.sock:/var/run/docker.sock \
+	  --volume=$PWD/traefik:/etc/traefik \
+	  --label=traefik.port=8080 --label=traefik.frontend.rule=Host:traefik.$DOMAIN --label=traefik.backend=traefik \
+	  --publish=80:80 --publish=443:443 \
+	  traefik
+	docker logs -f traefik
+	STEP=1
+fi
+
+# Start MariaDB, show it going to be registered
+if [[ $STEP -lt 2 ]]; then
+	docker run --detach --name=mariadb --env=MYSQL_ROOT_PASSWORD=lndw mariadb
+	docker logs -f mariadb
+	docker stop mariadb
+	docker rm mariadb
+	STEP=2
+fi
+
+# Start MariaDB without registration
+if [[ $STEP -lt 3 ]]; then
+	docker run --detach --name=mariadb --env=MYSQL_ROOT_PASSWORD=lndw --env=MYSQL_USER=wordpress --env=MYSQL_PASSWORD=wordpress --env=MYSQL_DATABASE=wordpress --label=traefik.enable=false mariadb
+	docker logs -f mariadb
+	docker stop mariadb
+	docker rm mariadb
+	STEP=3
+fi
+
+
+# Start Wordpress
+if [[ $STEP -lt 4 ]]; then
+	mariadb=$(docker run --detach --name=mariadb --env=MYSQL_ROOT_PASSWORD=lndw --label=traefik.enable=false mariadb)
+	docker run --rm --link=$mariadb:mysql --name=wordpress wordpress
+	docker rm -f $mariadb
+	STEP=4
+fi
+
+# Start 5 Whoami's
+if [[ $STEP -lt 5 ]]; then
+	docker run --detach --label=traefik.frontend.rule=Host:whoami.$DOMAIN --label=traefik.backend=whoami emilevauge/whoami
+	docker run --detach --label=traefik.frontend.rule=Host:whoami.$DOMAIN --label=traefik.backend=whoami emilevauge/whoami
+	docker run --detach --label=traefik.frontend.rule=Host:whoami.$DOMAIN --label=traefik.backend=whoami emilevauge/whoami
+	docker run --detach --label=traefik.frontend.rule=Host:whoami.$DOMAIN --label=traefik.backend=whoami emilevauge/whoami
+	docker run --detach --label=traefik.frontend.rule=Host:whoami.$DOMAIN --label=traefik.backend=whoami emilevauge/whoami
+	docker logs -f traefik
+	docker ps | grep emilevauge/whoami | awk '{print $1}' | xargs docker rm -f
+	STEP=5
+fi
+
+# Start LNDW Proxy
+if [[ $STEP -lt 6 ]]; then
+	docker run --rm --name=lndw --label=traefik.frontend.rule=Host:$DOMAIN --label=traefik.backend=lndw steigr/lndw
+	STEP=6
+fi
+

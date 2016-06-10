@@ -1,0 +1,11 @@
+#cloud-config
+coreos:
+  units:
+  - name: lndw.service
+    runtime: yes
+    command: start
+    content: |
+      [Service]
+      Type=oneshot
+      ExecStart=/usr/bin/docker run --rm --volume=/home/core:/demo --entrypoint=sh steigr/lndw \
+        -c "cp /var/lib/nginx/html/traefik/* /demo/; chown 500:500 /demo/*"

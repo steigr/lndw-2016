@@ -1,0 +1,6 @@
+#!/usr/bin/env sh
+
+export host=${host:-lndw.sty.gr}
+
+sed -e "s/\$host/$host/g" -i /etc/nginx/nginx.conf
+exec /usr/sbin/nginx -g 'daemon off;'
